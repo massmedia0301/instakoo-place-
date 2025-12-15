@@ -1,5 +1,5 @@
 # Playwright 공식 이미지 (Chromium + 필수 라이브러리 포함)
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 # 작업 디렉토리
 WORKDIR /app
