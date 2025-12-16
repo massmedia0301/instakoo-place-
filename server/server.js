@@ -24,6 +24,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 8080;
 
+// dist path (monolith: server/ 아래에서 ../dist)
+const DIST_DIR = path.join(__dirname, "../dist");
+
 // --------------------
 // Middlewares
 // --------------------
@@ -101,7 +104,9 @@ const extractKeywords = (text) => {
 const withTimeout = (promise, ms) =>
   Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT_${ms}`)), ms)),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`TIMEOUT_${ms}`)), ms)
+    ),
   ]);
 
 const normalizeUrl = (input) => {
@@ -119,12 +124,10 @@ const extractPlaceIdFromUrl = (urlLike = "") => {
   if (m && m[1]) return m[1];
 
   // m.place.naver.com/{type}/123..., place.naver.com/{type}/123...
-  m = s.match(/\/(restaurant|hospital|pharmacy|clinic|beauty|accommodation|place|hairshop|cafe)\/(\d+)/i);
+  m = s.match(
+    /\/(restaurant|hospital|pharmacy|clinic|beauty|accommodation|place|hairshop|cafe)\/(\d+)/i
+  );
   if (m && m[2]) return m[2];
-
-  // generic: /restaurant/123
-  m = s.match(/\/restaurant\/(\d+)/);
-  if (m && m[1]) return m[1];
 
   // query param
   m = s.match(/[?&]placeId=(\d+)/i);
@@ -140,16 +143,9 @@ const extractTypeFromUrl = (urlLike = "") => {
   return null;
 };
 
-/**
- * 입력 URL을 최종 URL로 따라간 뒤:
- * - placeId 추출
- * - type 힌트 추출 (m.place.naver.com/{type}/{id}에서 type)
- * - canonicalUrl (map.naver.com/p/entry/place/{id})도 제공
- */
 const resolveNaverPlaceUrl = async (inputUrl) => {
   const normalized = normalizeUrl(inputUrl);
 
-  // direct parse first
   const directId = extractPlaceIdFromUrl(normalized);
   const directType = extractTypeFromUrl(normalized);
 
@@ -163,7 +159,6 @@ const resolveNaverPlaceUrl = async (inputUrl) => {
     };
   }
 
-  // follow redirects (naver.me etc.)
   try {
     const res = await axios.get(normalized, {
       maxRedirects: 10,
@@ -172,7 +167,8 @@ const resolveNaverPlaceUrl = async (inputUrl) => {
         "User-Agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept:
+          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
       },
       timeout: 12000,
     });
@@ -182,7 +178,6 @@ const resolveNaverPlaceUrl = async (inputUrl) => {
     let placeId = extractPlaceIdFromUrl(finalUrl);
     let typeHint = extractTypeFromUrl(finalUrl);
 
-    // fallback: try HTML patterns
     if (!placeId && typeof res.data === "string") {
       const html = res.data;
       const mm =
@@ -191,9 +186,10 @@ const resolveNaverPlaceUrl = async (inputUrl) => {
         html.match(/m\.place\.naver\.com\/([^\/]+)\/(\d+)/i) ||
         html.match(/\/place\/(\d+)/);
       if (mm) {
-        if (!placeId && mm[2]) placeId = mm[2]; // type/id match
+        if (!placeId && mm[2]) placeId = mm[2];
         if (!placeId && mm[1] && /^\d+$/.test(mm[1])) placeId = mm[1];
-        if (!typeHint && mm[1] && !/^\d+$/.test(mm[1])) typeHint = String(mm[1]).toLowerCase();
+        if (!typeHint && mm[1] && !/^\d+$/.test(mm[1]))
+          typeHint = String(mm[1]).toLowerCase();
       }
     }
 
@@ -219,37 +215,26 @@ const resolveNaverPlaceUrl = async (inputUrl) => {
   }
 };
 
-// --------------------
-// Build mobile scrape URL candidates
-// --------------------
 const buildMobileScrapeCandidates = (placeId, typeHint) => {
   const id = String(placeId || "").trim();
   if (!id) return [];
-
   const candidates = [];
-
-  // 1) if we know exact type from redirect, try it first
   if (typeHint) candidates.push(`https://m.place.naver.com/${typeHint}/${id}`);
-
-  // 2) generic "place" (범용으로 자주 동작)
   candidates.push(`https://m.place.naver.com/place/${id}`);
-
-  // 3) restaurant fallback
   candidates.push(`https://m.place.naver.com/restaurant/${id}`);
-
-  // de-dup
   return [...new Set(candidates)];
 };
 
-// --------------------
-// Playwright Scraper (Mobile-first)
-// --------------------
 const scrapeNaverPlace = async (url) => {
   let browser;
   try {
     browser = await chromium.launch({
       headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+      ],
     });
 
     const context = await browser.newContext({
@@ -272,10 +257,13 @@ const scrapeNaverPlace = async (url) => {
     await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     await page.waitForTimeout(2500);
 
-    await page.waitForFunction(() => {
-      const t = document.body?.innerText || "";
-      return t.length > 500;
-    }, { timeout: 20000 });
+    await page.waitForFunction(
+      () => {
+        const t = document.body?.innerText || "";
+        return t.length > 500;
+      },
+      { timeout: 20000 }
+    );
 
     const dom = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
@@ -287,7 +275,6 @@ const scrapeNaverPlace = async (url) => {
       return { bodyText: bodyText.slice(0, 60000), placeName: title };
     });
 
-    // ✅ 띄어쓰기/표기변형 대응 (방문자리뷰 / 방문자 리뷰 / 블로그리뷰 / 블로그 리뷰)
     const receiptMatch =
       dom.bodyText.match(/방문\s*자?\s*리뷰\s*([0-9.,kmKM]+)/) ||
       dom.bodyText.match(/방문\s*자리뷰\s*([0-9.,kmKM]+)/);
@@ -300,7 +287,8 @@ const scrapeNaverPlace = async (url) => {
       placeName: dom.placeName,
       directionsText: "",
       storeInfoText: dom.bodyText.slice(0, 9000),
-      photoCount: dom.bodyText.includes("사진") || dom.bodyText.includes("이미지") ? 10 : 0,
+      photoCount:
+        dom.bodyText.includes("사진") || dom.bodyText.includes("이미지") ? 10 : 0,
       blogReviewCount: blogMatch ? parseIgNumber(blogMatch[1]) : 0,
       receiptReviewCount: receiptMatch ? parseIgNumber(receiptMatch[1]) : 0,
       menuCount: 0,
@@ -315,9 +303,6 @@ const scrapeNaverPlace = async (url) => {
   }
 };
 
-// --------------------
-// Naver Score
-// --------------------
 const calculateNaverScore = (data) => {
   let score = 0;
   const keywords = extractKeywords(data.fullText);
@@ -337,9 +322,38 @@ const calculateNaverScore = (data) => {
   return { score, grade, keywords, breakdown: [], recommendations: [] };
 };
 
-// --------------------
-// Instagram Diagnosis
-// --------------------
+/* ============================================================
+   ✅ IMPORTANT: Static files / runtime-config BEFORE SPA fallback
+   ============================================================ */
+
+// runtime-config.js는 반드시 SPA fallback보다 먼저!
+app.get("/runtime-config.js", (req, res) => {
+  res.type("application/javascript");
+  res.setHeader("Cache-Control", "no-store");
+  res.send(
+    `window.__RUNTIME_CONFIG__ = { API_BASE_URL: "${process.env.API_URL || ""}" };`
+  );
+});
+
+// 정적파일은 최대한 먼저 서빙 (assets가 HTML로 떨어지는 걸 방지)
+app.use(
+  express.static(DIST_DIR, {
+    index: false, // index.html은 SPA fallback에서 처리
+    maxAge: "1h",
+    setHeaders: (res, filePath) => {
+      // js 모듈은 제대로된 mime으로 보내기 (기본도 되지만 안전)
+      if (filePath.endsWith(".js")) res.type("application/javascript");
+      if (filePath.endsWith(".mjs")) res.type("application/javascript");
+      if (filePath.endsWith(".css")) res.type("text/css");
+    },
+  })
+);
+
+/* =====================
+   APIs
+===================== */
+
+// Instagram
 app.get("/api/diagnosis/instagram", diagnosisLimiter, async (req, res) => {
   const { username } = req.query;
   if (!username) return res.status(400).json({ success: false });
@@ -370,9 +384,7 @@ app.get("/api/diagnosis/instagram", diagnosisLimiter, async (req, res) => {
   }
 });
 
-// --------------------
-// Naver Place Diagnosis (type-aware mobile conversion)
-// --------------------
+// Naver Place
 app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
   const { url } = req.body;
   const input = normalizeUrl(url);
@@ -400,23 +412,25 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
       return res.status(422).json({
         ok: false,
         error: "PLACE_ID_NOT_FOUND",
-        message: "플레이스 ID를 추출하지 못했습니다. 링크 형식이 예상과 다를 수 있습니다.",
+        message:
+          "플레이스 ID를 추출하지 못했습니다. 링크 형식이 예상과 다를 수 있습니다.",
         debug: { resolved },
       });
     }
 
-    // cache key is stable by placeId
     const cacheKey = `np_id_${resolved.placeId}`;
     const cached = diagnosisCache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    const candidates = buildMobileScrapeCandidates(resolved.placeId, resolved.typeHint);
+    const candidates = buildMobileScrapeCandidates(
+      resolved.placeId,
+      resolved.typeHint
+    );
 
     let lastErr = null;
     let scraped = null;
     let usedUrl = null;
 
-    // 후보 URL을 순서대로 시도
     for (const cand of candidates) {
       try {
         usedUrl = cand;
@@ -427,9 +441,7 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
       }
     }
 
-    if (!scraped) {
-      throw lastErr || new Error("SCRAPE_FAILED: all candidates failed");
-    }
+    if (!scraped) throw lastErr || new Error("SCRAPE_FAILED: all candidates failed");
 
     const analysis = calculateNaverScore(scraped);
 
@@ -478,26 +490,20 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
   }
 });
 
-// --------------------
 // Health & Version
-// --------------------
 app.get("/api/health", (req, res) => res.json({ ok: true }));
-app.get("/api/version", (req, res) => res.json({ ok: true, version: "LOCAL-FINAL-TYPE-AWARE-V4" }));
+app.get("/api/version", (req, res) =>
+  res.json({ ok: true, version: "LOCAL-FINAL-TYPE-AWARE-V4" })
+);
 
-// --------------------
-// Runtime Config
-// --------------------
-app.get("/runtime-config.js", (req, res) => {
-  res.type("application/javascript");
-  res.setHeader("Cache-Control", "no-store");
-  res.send(`window.__RUNTIME_CONFIG__ = { API_BASE_URL: "${process.env.API_URL || ""}" };`);
+/* =====================
+   SPA fallback (LAST)
+===================== */
+
+// ✅ 정적/런타임/API 어떤 것도 매칭 안 될 때만 index.html
+app.get("*", (req, res) => {
+  return res.sendFile(path.join(DIST_DIR, "index.html"));
 });
-
-// --------------------
-// Static + SPA
-// --------------------
-app.use(express.static(path.join(__dirname, "../dist")));
-app.get("*", (req, res) => res.sendFile(path.join(__dirname, "../dist", "index.html")));
 
 app.listen(PORT, () => {
   console.log(`Server running on ${PORT}`);
