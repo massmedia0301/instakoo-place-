@@ -566,33 +566,50 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
 
     console.log("[naver] response send");
     return res.json(responseData);
-  } catch (e) {
-    const msg = String(e?.message || e);
-    console.error("[naver] error", msg);
+    
+} catch (e) {
+  const msg = String(e?.message || e);
 
-    if (msg.startsWith("TIMEOUT_")) {
-      return res.status(504).json({
-        ok: false,
-        error: "NAVER_PLACE_TIMEOUT",
-        message: "네이버 페이지 응답이 지연되어 분석이 중단되었습니다. 잠시 후 다시 시도해주세요.",
-      });
-    }
+  console.error("[naver-place] error", {
+    inputUrl: req.body?.url,
+    resolvedUrl: (typeof resolvedUrl !== "undefined" ? resolvedUrl : null),
+    name: e?.name,
+    message: msg,
+    stack: e?.stack,
+  });
 
-    if (msg === "SCRAPE_FAILED") {
-      return res.status(500).json({
-        ok: false,
-        error: "SCRAPE_FAILED",
-        message: "페이지 정보를 수집하는데 실패했습니다. 잠시 후 다시 시도해주세요.",
-      });
-    }
-
-    return res.status(500).json({
+  if (msg.startsWith("TIMEOUT_")) {
+    return res.status(504).json({
       ok: false,
-      error: "UNKNOWN",
-      message: "서버 내부 오류가 발생했습니다.",
+      error: "NAVER_PLACE_TIMEOUT",
+      message: "네이버 페이지 응답이 지연되어 분석이 중단되었습니다. 잠시 후 다시 시도해주세요.",
+      debug: { message: msg },
     });
   }
-});
+
+  if (msg === "SCRAPE_FAILED") {
+    return res.status(500).json({
+      ok: false,
+      error: "SCRAPE_FAILED",
+      message: "페이지 정보를 수집하는데 실패했습니다. 잠시 후 다시 시도해주세요.",
+      debug: {
+        name: e?.name,
+        message: msg,
+      },
+    });
+  }
+
+  return res.status(500).json({
+    ok: false,
+    error: "UNKNOWN",
+    message: "서버 내부 오류가 발생했습니다.",
+    debug: {
+      name: e?.name,
+      message: msg,
+    },
+  });
+}
+
 
 // ✅ Health check 추가 (반드시 static/fallback 보다 위)
 app.get("/api/health", (req, res) => {
