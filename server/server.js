@@ -482,13 +482,16 @@ app.post('/api/diagnosis/naver-place', naverPlaceLimiter, async (req, res) => {
 // --- Runtime Config Injection ---
 app.get('/runtime-config.js', (req, res) => {
   res.type('application/javascript');
+  // ✅ 통일: API_URL 대신 VITE_API_URL만 쓰지 말고, 프론트에서 쓰는 키로 고정
   const apiUrl = process.env.API_URL || ''; 
-  res.send(`window.__RUNTIME_CONFIG__ = { VITE_API_URL: "${apiUrl}" };`);
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`window.__RUNTIME_CONFIG__ = { API_BASE_URL: "${apiUrl}" };`);
 });
 
-// --- Serve Static Frontend Files ---
-// ESM requires explicit path handling
-app.use(express.static(path.join(__dirname, '../dist')));
+// ✅ Health check 추가 (반드시 static/fallback 보다 위)
+app.get('/api/health', (req, res) => {
+  res.json({ ok: true });
+});
 
 // --- Order Routes (Mock) ---
 const orders = [];
@@ -508,11 +511,19 @@ app.post('/api/orders', (req, res) => {
   res.json({ success: true, data: newOrder });
 });
 
-// --- SPA Fallback ---
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, '../dist', 'index.html'));
-});
+// --- Serve Static Frontend Files ---
+// ✅ API 라우트 다 등록한 다음에 static!
+app.use(express.static(path.join(__dirname, '../dist')));
 
+// --- SPA Fallback ---
+// ✅ 맨 마지막
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'NOT_FOUND' });
+  }
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+});
 app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
