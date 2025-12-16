@@ -600,7 +600,15 @@ app.get("/runtime-config.js", (req, res) => {
 app.get("/api/health", (req, res) => {
   res.json({ ok: true });
 });
+// ✅ Health check 추가 (반드시 static/fallback 보다 위)
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true });
+});
 
+// ✅ Version check (배포 반영 확인용)
+app.get('/api/version', (req, res) => {
+  res.json({ ok: true, version: 'naver-timeout-v2' });
+});
 // --- Order Routes (Mock) ---
 const orders = [];
 app.post("/api/orders", (req, res) => {
