@@ -55,7 +55,7 @@ const naverPlaceLimiter = rateLimit({
 // --------------------
 const parseIgNumber = (str) => {
   if (!str) return 0;
-  let clean = str.replace(/,/g, "").replace(/\s/g, "").toLowerCase();
+  let clean = String(str).replace(/,/g, "").replace(/\s/g, "").toLowerCase();
   let multiplier = 1;
   if (clean.includes("k")) multiplier = 1000;
   if (clean.includes("m")) multiplier = 1_000_000;
@@ -67,8 +67,24 @@ const parseIgNumber = (str) => {
 
 const extractKeywords = (text) => {
   if (!text) return { main: [], sub: [] };
-  const tokens = text.replace(/[^\w\s가-힣]/g, " ").split(/\s+/);
-  const stopWords = ["있는", "없는", "하는", "및", "등", "를", "을", "가", "이", "은", "는", "에", "의", "도", "다"];
+  const tokens = String(text).replace(/[^\w\s가-힣]/g, " ").split(/\s+/);
+  const stopWords = [
+    "있는",
+    "없는",
+    "하는",
+    "및",
+    "등",
+    "를",
+    "을",
+    "가",
+    "이",
+    "은",
+    "는",
+    "에",
+    "의",
+    "도",
+    "다",
+  ];
   const freq = {};
   tokens.forEach((t) => {
     if (t.length > 1 && !stopWords.includes(t)) {
@@ -82,49 +98,151 @@ const extractKeywords = (text) => {
   };
 };
 
-/**
- * ✅ naver.me / map.naver.com 어떤 형태든
- * placeId 뽑아서 네가 원하는 정본 URL로 통일:
- * https://map.naver.com/p/entry/place/{placeId}
- */
-const resolveNaverPlaceUrl = async (inputUrl) => {
-  try {
-    const res = await axios.get(inputUrl, {
-      maxRedirects: 10,
-      validateStatus: (s) => s < 400,
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept-Language": "ko-KR,ko;q=0.9",
-      },
-      timeout: 8000,
-    });
-
-    const finalUrl = res.request?.res?.responseUrl || inputUrl;
-
-    // ✅ /place/2098086907 형태에서 placeId 추출 (v5/entry든 p/entry든 공통)
-    const match = finalUrl.match(/\/place\/(\d+)/);
-    const placeId = match ? match[1] : null;
-
-    // ✅ 정본 URL
-    const canonicalUrl = placeId
-      ? `https://map.naver.com/p/entry/place/${placeId}`
-      : finalUrl;
-
-    return { inputUrl, finalUrl, placeId, canonicalUrl };
-  } catch (e) {
-    return { inputUrl, finalUrl: inputUrl, placeId: null, canonicalUrl: inputUrl };
-  }
-};
-
 const withTimeout = (promise, ms) =>
   Promise.race([
     promise,
     new Promise((_, reject) => setTimeout(() => reject(new Error(`TIMEOUT_${ms}`)), ms)),
   ]);
 
+const normalizeUrl = (input) => {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return raw;
+  return `https://${raw}`;
+};
+
+const extractPlaceIdFromUrl = (urlLike = "") => {
+  const s = String(urlLike || "");
+
+  // map.naver.com/.../place/123
+  let m = s.match(/\/place\/(\d+)/);
+  if (m && m[1]) return m[1];
+
+  // m.place.naver.com/{type}/123..., place.naver.com/{type}/123...
+  m = s.match(/\/(restaurant|hospital|pharmacy|clinic|beauty|accommodation|place|hairshop|cafe)\/(\d+)/i);
+  if (m && m[2]) return m[2];
+
+  // generic: /restaurant/123
+  m = s.match(/\/restaurant\/(\d+)/);
+  if (m && m[1]) return m[1];
+
+  // query param
+  m = s.match(/[?&]placeId=(\d+)/i);
+  if (m && m[1]) return m[1];
+
+  return null;
+};
+
+const extractTypeFromUrl = (urlLike = "") => {
+  const s = String(urlLike || "");
+  const m = s.match(/m\.place\.naver\.com\/([^\/]+)\/(\d+)/i);
+  if (m && m[1]) return m[1].toLowerCase();
+  return null;
+};
+
+/**
+ * 입력 URL을 최종 URL로 따라간 뒤:
+ * - placeId 추출
+ * - type 힌트 추출 (m.place.naver.com/{type}/{id}에서 type)
+ * - canonicalUrl (map.naver.com/p/entry/place/{id})도 제공
+ */
+const resolveNaverPlaceUrl = async (inputUrl) => {
+  const normalized = normalizeUrl(inputUrl);
+
+  // direct parse first
+  const directId = extractPlaceIdFromUrl(normalized);
+  const directType = extractTypeFromUrl(normalized);
+
+  if (directId) {
+    return {
+      inputUrl,
+      finalUrl: normalized,
+      placeId: directId,
+      typeHint: directType,
+      canonicalUrl: `https://map.naver.com/p/entry/place/${directId}`,
+    };
+  }
+
+  // follow redirects (naver.me etc.)
+  try {
+    const res = await axios.get(normalized, {
+      maxRedirects: 10,
+      validateStatus: (s) => s < 400,
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ko-KR,ko;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      },
+      timeout: 12000,
+    });
+
+    const finalUrl = res?.request?.res?.responseUrl || normalized;
+
+    let placeId = extractPlaceIdFromUrl(finalUrl);
+    let typeHint = extractTypeFromUrl(finalUrl);
+
+    // fallback: try HTML patterns
+    if (!placeId && typeof res.data === "string") {
+      const html = res.data;
+      const mm =
+        html.match(/"placeId"\s*:\s*"(\d+)"/) ||
+        html.match(/"placeId"\s*:\s*(\d+)/) ||
+        html.match(/m\.place\.naver\.com\/([^\/]+)\/(\d+)/i) ||
+        html.match(/\/place\/(\d+)/);
+      if (mm) {
+        if (!placeId && mm[2]) placeId = mm[2]; // type/id match
+        if (!placeId && mm[1] && /^\d+$/.test(mm[1])) placeId = mm[1];
+        if (!typeHint && mm[1] && !/^\d+$/.test(mm[1])) typeHint = String(mm[1]).toLowerCase();
+      }
+    }
+
+    const canonicalUrl = placeId
+      ? `https://map.naver.com/p/entry/place/${placeId}`
+      : finalUrl;
+
+    return {
+      inputUrl,
+      finalUrl,
+      placeId: placeId || null,
+      typeHint: typeHint || null,
+      canonicalUrl,
+    };
+  } catch {
+    return {
+      inputUrl,
+      finalUrl: normalized,
+      placeId: null,
+      typeHint: null,
+      canonicalUrl: normalized,
+    };
+  }
+};
+
 // --------------------
-// Playwright Scraper
+// Build mobile scrape URL candidates
+// --------------------
+const buildMobileScrapeCandidates = (placeId, typeHint) => {
+  const id = String(placeId || "").trim();
+  if (!id) return [];
+
+  const candidates = [];
+
+  // 1) if we know exact type from redirect, try it first
+  if (typeHint) candidates.push(`https://m.place.naver.com/${typeHint}/${id}`);
+
+  // 2) generic "place" (범용으로 자주 동작)
+  candidates.push(`https://m.place.naver.com/place/${id}`);
+
+  // 3) restaurant fallback
+  candidates.push(`https://m.place.naver.com/restaurant/${id}`);
+
+  // de-dup
+  return [...new Set(candidates)];
+};
+
+// --------------------
+// Playwright Scraper (Mobile-first)
 // --------------------
 const scrapeNaverPlace = async (url) => {
   let browser;
@@ -137,10 +255,13 @@ const scrapeNaverPlace = async (url) => {
     const context = await browser.newContext({
       locale: "ko-KR",
       timezoneId: "Asia/Seoul",
+      userAgent:
+        "Mozilla/5.0 (Linux; Android 12; SM-G991N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+      viewport: { width: 412, height: 915 },
     });
 
     const page = await context.newPage();
-    page.setDefaultTimeout(3000);
+    page.setDefaultTimeout(30000);
 
     await page.route("**/*", (route) => {
       const t = route.request().resourceType();
@@ -148,34 +269,47 @@ const scrapeNaverPlace = async (url) => {
       route.continue();
     });
 
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    await page.waitForTimeout(1500);
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForTimeout(2500);
+
+    await page.waitForFunction(() => {
+      const t = document.body?.innerText || "";
+      return t.length > 500;
+    }, { timeout: 20000 });
 
     const dom = await page.evaluate(() => {
       const bodyText = document.body?.innerText || "";
       const title =
         document.querySelector("h1")?.innerText ||
         document.querySelector("[role='heading']")?.innerText ||
+        document.querySelector("title")?.innerText ||
         "Unknown";
-      return { bodyText: bodyText.slice(0, 20000), placeName: title };
+      return { bodyText: bodyText.slice(0, 60000), placeName: title };
     });
 
-    const receiptMatch = dom.bodyText.match(/방문자리뷰\s*([0-9.,kmKM]+)/);
-    const blogMatch = dom.bodyText.match(/블로그리뷰\s*([0-9.,kmKM]+)/);
+    // ✅ 띄어쓰기/표기변형 대응 (방문자리뷰 / 방문자 리뷰 / 블로그리뷰 / 블로그 리뷰)
+    const receiptMatch =
+      dom.bodyText.match(/방문\s*자?\s*리뷰\s*([0-9.,kmKM]+)/) ||
+      dom.bodyText.match(/방문\s*자리뷰\s*([0-9.,kmKM]+)/);
+
+    const blogMatch =
+      dom.bodyText.match(/블로그\s*리뷰\s*([0-9.,kmKM]+)/) ||
+      dom.bodyText.match(/블로그리뷰\s*([0-9.,kmKM]+)/);
 
     return {
       placeName: dom.placeName,
       directionsText: "",
-      storeInfoText: dom.bodyText.slice(0, 4000),
-      photoCount: dom.bodyText.includes("사진") ? 10 : 0,
+      storeInfoText: dom.bodyText.slice(0, 9000),
+      photoCount: dom.bodyText.includes("사진") || dom.bodyText.includes("이미지") ? 10 : 0,
       blogReviewCount: blogMatch ? parseIgNumber(blogMatch[1]) : 0,
       receiptReviewCount: receiptMatch ? parseIgNumber(receiptMatch[1]) : 0,
       menuCount: 0,
       menuWithDescriptionCount: 0,
-      fullText: dom.bodyText.slice(0, 5000),
+      fullText: dom.bodyText.slice(0, 15000),
     };
   } catch (e) {
-    throw new Error("SCRAPE_FAILED");
+    const detail = e?.stack || e?.message || String(e);
+    throw new Error(`SCRAPE_FAILED: ${detail}`);
   } finally {
     if (browser) await browser.close();
   }
@@ -187,11 +321,12 @@ const scrapeNaverPlace = async (url) => {
 const calculateNaverScore = (data) => {
   let score = 0;
   const keywords = extractKeywords(data.fullText);
-  if (data.storeInfoText.length > 300) score += 25;
-  if (data.receiptReviewCount > 50) score += 15;
-  if (data.blogReviewCount > 10) score += 15;
-  if (data.photoCount > 5) score += 10;
-  if (keywords.main.length >= 3) score += 10;
+
+  if ((data.storeInfoText || "").length > 300) score += 25;
+  if ((data.receiptReviewCount || 0) > 50) score += 15;
+  if ((data.blogReviewCount || 0) > 10) score += 15;
+  if ((data.photoCount || 0) > 5) score += 10;
+  if ((keywords.main || []).length >= 3) score += 10;
 
   let grade = "D";
   if (score >= 90) grade = "S";
@@ -217,7 +352,9 @@ app.get("/api/diagnosis/instagram", diagnosisLimiter, async (req, res) => {
     const html = (await axios.get(`https://www.instagram.com/${username}/`)).data;
     const $ = cheerio.load(html);
     const meta = $('meta[property="og:description"]').attr("content");
-    const match = meta?.match(/([0-9.,km]+)\s*Followers?,\s*([0-9.,km]+)\s*Following,\s*([0-9.,km]+)\s*Posts?/i);
+    const match = meta?.match(
+      /([0-9.,km]+)\s*Followers?,\s*([0-9.,km]+)\s*Following,\s*([0-9.,km]+)\s*Posts?/i
+    );
     if (!match) throw new Error("PARSE_FAILED");
 
     const data = {
@@ -234,43 +371,77 @@ app.get("/api/diagnosis/instagram", diagnosisLimiter, async (req, res) => {
 });
 
 // --------------------
-// Naver Place Diagnosis (✅ naver.me -> p/entry 정규화)
+// Naver Place Diagnosis (type-aware mobile conversion)
 // --------------------
 app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
   const { url } = req.body;
+  const input = normalizeUrl(url);
 
-  if (!url || (!url.includes("naver.me") && !url.includes("naver.com"))) {
+  if (
+    !input ||
+    (!input.includes("naver.me") &&
+      !input.includes("naver.com") &&
+      !input.includes("naver.net"))
+  ) {
     return res.status(400).json({
       ok: false,
       error: "INVALID_URL",
-      message: "올바른 네이버 플레이스 링크(naver.me 또는 map.naver.com)를 입력해주세요.",
+      message: "올바른 네이버 플레이스 링크를 입력해주세요.",
     });
   }
 
   let resolved = null;
 
   try {
-    // ✅ 1) 정규화 (naver.me → finalUrl → placeId → canonicalUrl)
-    resolved = await resolveNaverPlaceUrl(url);
+    resolved = await resolveNaverPlaceUrl(input);
+    console.log("[DEBUG] resolved =", resolved);
 
-    // ✅ 2) 캐시 키: placeId가 있으면 그걸로 고정 (제일 안정적)
-    const cacheKey = resolved.placeId
-      ? `np_id_${resolved.placeId}`
-      : `np_url_${Buffer.from(resolved.canonicalUrl).toString("base64")}`;
+    if (!resolved.placeId) {
+      return res.status(422).json({
+        ok: false,
+        error: "PLACE_ID_NOT_FOUND",
+        message: "플레이스 ID를 추출하지 못했습니다. 링크 형식이 예상과 다를 수 있습니다.",
+        debug: { resolved },
+      });
+    }
 
+    // cache key is stable by placeId
+    const cacheKey = `np_id_${resolved.placeId}`;
     const cached = diagnosisCache.get(cacheKey);
     if (cached) return res.json(cached);
 
-    // ✅ 3) 스크래핑은 canonicalUrl로 (네가 원하는 형태)
-    const scraped = await withTimeout(scrapeNaverPlace(resolved.canonicalUrl), 55000);
+    const candidates = buildMobileScrapeCandidates(resolved.placeId, resolved.typeHint);
+
+    let lastErr = null;
+    let scraped = null;
+    let usedUrl = null;
+
+    // 후보 URL을 순서대로 시도
+    for (const cand of candidates) {
+      try {
+        usedUrl = cand;
+        scraped = await withTimeout(scrapeNaverPlace(cand), 55000);
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+
+    if (!scraped) {
+      throw lastErr || new Error("SCRAPE_FAILED: all candidates failed");
+    }
+
     const analysis = calculateNaverScore(scraped);
 
     const response = {
       ok: true,
-      inputUrl: url,
+      inputUrl: input,
       finalUrl: resolved.finalUrl,
       canonicalUrl: resolved.canonicalUrl,
       placeId: resolved.placeId,
+      typeHint: resolved.typeHint,
+      scrapeUrl: usedUrl,
+      scrapeCandidates: candidates,
       placeName: scraped.placeName,
       metrics: scraped,
       score: analysis.score,
@@ -279,16 +450,22 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
     };
 
     diagnosisCache.set(cacheKey, response);
-    res.json(response);
+    return res.json(response);
   } catch (e) {
-    const msg = String(e?.message || e);
+    const detail =
+      e?.stack ||
+      e?.message ||
+      (typeof e === "string" ? e : JSON.stringify(e, null, 2));
 
-    if (msg.startsWith("TIMEOUT_") || msg.startsWith("TIMEOUT")) {
+    console.log("[ERROR] naver-place failed");
+    console.log(detail);
+
+    if (String(detail).includes("TIMEOUT_") || String(detail).includes("TIMEOUT")) {
       return res.status(504).json({
         ok: false,
         error: "TIMEOUT",
         message: "네이버 페이지 응답이 지연되어 분석이 중단되었습니다.",
-        debug: { message: msg, resolved },
+        debug: { message: detail, resolved },
       });
     }
 
@@ -296,7 +473,7 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
       ok: false,
       error: "SCRAPE_FAILED",
       message: "페이지 정보를 수집하는데 실패했습니다.",
-      debug: { message: msg, resolved },
+      debug: { message: detail, resolved },
     });
   }
 });
@@ -305,7 +482,7 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
 // Health & Version
 // --------------------
 app.get("/api/health", (req, res) => res.json({ ok: true }));
-app.get("/api/version", (req, res) => res.json({ ok: true, version: "stable-v2-p-entry" }));
+app.get("/api/version", (req, res) => res.json({ ok: true, version: "LOCAL-FINAL-TYPE-AWARE-V4" }));
 
 // --------------------
 // Runtime Config
