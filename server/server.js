@@ -135,7 +135,7 @@ function withTimeout(promise, ms) {
   ]);
 }
 
-// 3. Playwright Scraper (Cloud Run Optimized)
+// 3. Playwright Scraper (Fast + No-hang)
 const scrapeNaverPlace = async (url) => {
   let browser = null;
   try {
@@ -163,94 +163,77 @@ const scrapeNaverPlace = async (url) => {
 
     const page = await context.newPage();
 
-    // 🔥 리소스 차단 (속도 + 안정성)
+    // ✅ 기본 자동대기 시간을 짧게 (locator hang 방지)
+    page.setDefaultTimeout(3000);
+
+    // ✅ 리소스 차단
     await page.route("**/*", (route) => {
       const type = route.request().resourceType();
-      if (["image", "font", "media"].includes(type)) {
-        return route.abort();
-      }
+      if (["image", "font", "media"].includes(type)) return route.abort();
       return route.continue();
     });
 
     console.log("[naver] goto start", url);
 
-    await page.goto(url, {
-      waitUntil: "domcontentloaded",
-      timeout: 45000,
-    });
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
 
     console.log("[naver] goto done");
 
-    // --- 안전한 selector 대기 (없어도 진행되게) ---
-    try {
-      await page.waitForSelector("#_title", { timeout: 5000 });
-    } catch (e) {}
+    // ✅ 렌더링 약간만 기다림 (최대 1.5초)
+    await page.waitForTimeout(1500);
 
     console.log("[naver] extract start");
 
-    const placeName = await page
-      .locator("#_title span.Fc1rA")
-      .first()
-      .innerText()
-      .catch(() => "Unknown");
-
-    let storeInfoText = "";
-    try {
-      const descLocator = page.locator(".zPfVt");
-      if ((await descLocator.count()) > 0) {
-        storeInfoText = await descLocator.first().innerText();
-      }
-    } catch (e) {}
-
-    let directionsText = "";
-    try {
-      const directionLocator = page.locator(".O8qbU.tQY7D");
-      if ((await directionLocator.count()) > 0) {
-        directionsText = await directionLocator.first().innerText();
-      }
-    } catch (e) {}
-
-    let receiptReviewCount = 0;
-    let blogReviewCount = 0;
-    try {
-      const reviewText = await page.locator(".PXMot").allInnerTexts();
-      for (const txt of reviewText) {
-        if (txt.includes("방문자리뷰")) {
-          receiptReviewCount = parseIgNumber(txt.replace("방문자리뷰", ""));
-        } else if (txt.includes("블로그리뷰")) {
-          blogReviewCount = parseIgNumber(txt.replace("블로그리뷰", ""));
+    // ✅ 즉시 DOM에서 텍스트 가져오기 (없으면 "" 반환, 절대 대기 안 함)
+    const dom = await page.evaluate(() => {
+      const pick = (...sels) => {
+        for (const sel of sels) {
+          const el = document.querySelector(sel);
+          const t = el?.textContent?.trim();
+          if (t) return t;
         }
-      }
-    } catch (e) {}
+        return "";
+      };
 
-    let menuCount = 0;
-    let menuWithDescriptionCount = 0;
-    try {
-      const menuItems = page.locator(".E2jtL");
-      menuCount = await menuItems.count();
-      for (let i = 0; i < menuCount; i++) {
-        const item = menuItems.nth(i);
-        const desc = await item.locator(".kPogF").innerText().catch(() => "");
-        if (desc && desc.length > 5) menuWithDescriptionCount++;
-      }
-    } catch (e) {}
+      const bodyText = (document.body?.innerText || "").slice(0, 20000);
 
-    let photoCount = 0;
-    try {
-      if ((await page.getByText("사진").count()) > 0) {
-        photoCount = 10;
-      }
-    } catch (e) {}
+      return {
+        // 타이틀 후보 셀렉터 여러 개
+        placeName: pick(
+          "#_title span.Fc1rA",
+          "h1",
+          "[class*='Fc1rA']",
+          "[class*='title'] h1",
+          "[role='heading']"
+        ),
+        // 소개글/찾아오는 길은 구조가 자주 바뀌어서 bodyText로 대체 가능
+        bodyText,
+      };
+    });
 
-    const fullText = (
-      placeName +
-      " " +
-      storeInfoText +
-      " " +
-      directionsText
-    ).substring(0, 5000);
+    const bodyText = dom.bodyText || "";
 
-    console.log("[naver] extract done");
+    // ✅ 방문자리뷰/블로그리뷰: 텍스트에서 정규식으로 바로 파싱 (빠르고 안정적)
+    const receiptMatch = bodyText.match(/방문자리뷰\s*([0-9.,kmKM]+)/);
+    const blogMatch = bodyText.match(/블로그리뷰\s*([0-9.,kmKM]+)/);
+
+    const receiptReviewCount = receiptMatch ? parseIgNumber(receiptMatch[1]) : 0;
+    const blogReviewCount = blogMatch ? parseIgNumber(blogMatch[1]) : 0;
+
+    // ✅ 소개글/길안내는 안정 셀렉터가 없으면 일단 bodyText 일부로 대체(길이 점수용)
+    // (원하면 다음 단계에서 더 정확한 selector로 업그레이드 가능)
+    const storeInfoText = bodyText.slice(0, 4000);
+    const directionsText = ""; // 구조가 너무 자주 바뀌어서 일단 빈값 처리
+
+    // 메뉴/사진은 없으면 0 처리 (안 멈추는 게 우선)
+    const menuCount = 0;
+    const menuWithDescriptionCount = 0;
+    const photoCount = bodyText.includes("사진") ? 10 : 0;
+
+    const placeName = dom.placeName || "Unknown";
+    const fullText = (placeName + " " + storeInfoText + " " + directionsText).slice(0, 5000);
+
+    console.log("[naver] extract done", { placeName, receiptReviewCount, blogReviewCount });
 
     return {
       placeName,
@@ -273,6 +256,7 @@ const scrapeNaverPlace = async (url) => {
     }
   }
 };
+
 
 
 const calculateNaverScore = (data) => {
