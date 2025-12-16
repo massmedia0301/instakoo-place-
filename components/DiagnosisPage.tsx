@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { getApiBaseUrl } from '../config';
 
@@ -81,7 +80,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
         "계정 성장 잠재력 예측 모델링 구동...",
         "최종 진단 리포트 생성 중..."
       ];
-    } else { // NAVER_PLACE
+    } else {
       return [
         "분석 서버와 보안 세션 수립 중...",
         "빅데이터 분석 엔진(Big Data Engine) 가동...",
@@ -108,6 +107,8 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
     setStep('INPUT');
     setInputId('');
     setErrorMessage('');
+    setIgResult(null);
+    setNpResult(null);
   };
 
   /* =====================
@@ -127,30 +128,28 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
     setStep('ANALYZING');
     setProgress(0);
     setErrorMessage('');
-    
-    // 1. Loading Text Logic (Slower, more variety)
+
     const messages = getLoadingMessages(platform);
     let msgIndex = 0;
     setLoadingText(messages[0]);
 
     if (textIntervalRef.current) clearInterval(textIntervalRef.current);
     textIntervalRef.current = setInterval(() => {
-        msgIndex = (msgIndex + 1) % messages.length;
-        setLoadingText(messages[msgIndex]);
-    }, 1500); // Change text every 1.5 seconds
+      msgIndex = (msgIndex + 1) % messages.length;
+      setLoadingText(messages[msgIndex]);
+    }, 1500);
 
-    // 2. Progress Bar Logic (Zeno's Paradox style - slower as it goes up)
     if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     progressIntervalRef.current = setInterval(() => {
       setProgress((prev) => {
-        if (prev >= 95) return prev; // Cap at 95% until done
-        
+        if (prev >= 95) return prev;
+
         let increment = 1;
-        if (prev < 30) increment = 2;       // Fast start
-        else if (prev < 60) increment = 0.5; // Slow down
-        else if (prev < 80) increment = 0.2; // Crawl
-        else increment = 0.05;               // Almost stop
-        
+        if (prev < 30) increment = 2;
+        else if (prev < 60) increment = 0.5;
+        else if (prev < 80) increment = 0.2;
+        else increment = 0.05;
+
         return Math.min(prev + increment, 95);
       });
     }, 100);
@@ -159,7 +158,6 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       const API_BASE = getApiBaseUrl();
       console.log("Diagnosis API Base:", API_BASE);
 
-      // Create an AbortController for timeout (60 seconds)
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000);
 
@@ -181,7 +179,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
         if (!contentType.includes('application/json')) {
           const text = await response.text();
           console.error('API Response Error (Not JSON):', text.substring(0, 200));
-          throw new Error('서버 연결 실패: 백엔드 서버가 켜져있는지 확인해주세요. (npm start)');
+          throw new Error('서버 연결 실패: 백엔드 서버 응답이 JSON이 아닙니다.');
         }
 
         const data = await response.json();
@@ -189,7 +187,6 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
         if (response.ok && data.success) {
           setProgress(100);
           setIgResult(data.data);
-          // Wait a tiny bit to show 100%
           setTimeout(() => setStep('RESULT'), 500);
         } else {
           throw new Error(data.message || '인스타그램 진단 실패');
@@ -215,15 +212,33 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
         if (!contentType.includes('application/json')) {
           const text = await response.text();
           console.error('API Response Error (Not JSON):', text.substring(0, 200));
-          throw new Error('서버 연결 실패: 백엔드 서버가 켜져있는지 확인해주세요. (npm start)');
+          throw new Error('서버 연결 실패: 백엔드 서버 응답이 JSON이 아닙니다.');
         }
 
         const data = await response.json();
 
         if (response.ok) {
+          // ✅ 핵심: 서버 응답 구조가 달라도 프론트가 절대 죽지 않게 안전 보정
+          const safe: NaverPlaceResponse = {
+            placeName: data.placeName ?? "Unknown",
+            metrics: data.metrics ?? {
+              directionsTextLength: 0,
+              storeInfoTextLength: 0,
+              photoCount: 0,
+              blogReviewCount: 0,
+              receiptReviewCount: 0,
+              menuCount: 0,
+              menuWithDescriptionCount: 0,
+            },
+            keywords: data.keywords ?? { main: [], sub: [] },
+            score: typeof data.score === "number" ? data.score : 0,
+            grade: data.grade ?? "D",
+            scoreBreakdown: Array.isArray(data.scoreBreakdown) ? data.scoreBreakdown : [],
+            recommendations: Array.isArray(data.recommendations) ? data.recommendations : [],
+          };
+
           setProgress(100);
-          setNpResult(data);
-          // Wait a tiny bit to show 100%
+          setNpResult(safe);
           setTimeout(() => setStep('RESULT'), 500);
         } else {
           throw new Error(data.message || '네이버 플레이스 진단 실패');
@@ -231,29 +246,28 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
-          setErrorMessage('분석 시간이 초과되었습니다. (서버 응답 지연)\n잠시 후 다시 시도해주세요.');
+        setErrorMessage('분석 시간이 초과되었습니다. (서버 응답 지연)\n잠시 후 다시 시도해주세요.');
       } else {
-          console.error('Diagnosis Error:', err);
-          let msg = err.message || '분석 중 오류가 발생했습니다.';
-          if (msg.includes('Failed to fetch')) {
-              msg = '서버에 연결할 수 없습니다. (백엔드 서버 실행 확인 필요)';
-          }
-          setErrorMessage(msg);
+        console.error('Diagnosis Error:', err);
+        let msg = err.message || '분석 중 오류가 발생했습니다.';
+        if (msg.includes('Failed to fetch')) {
+          msg = '서버에 연결할 수 없습니다. (백엔드 서버 실행/배포 확인 필요)';
+        }
+        setErrorMessage(msg);
       }
       setStep('ERROR');
     } finally {
-        // Cleanup intervals
-        if (textIntervalRef.current) clearInterval(textIntervalRef.current);
-        if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+      if (textIntervalRef.current) clearInterval(textIntervalRef.current);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
     }
   };
-  
+
   // Cleanup on unmount
   useEffect(() => {
-      return () => {
-        if (textIntervalRef.current) clearInterval(textIntervalRef.current);
-        if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-      };
+    return () => {
+      if (textIntervalRef.current) clearInterval(textIntervalRef.current);
+      if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    };
   }, []);
 
   /* =====================
@@ -265,13 +279,13 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       <div className="text-center mb-10">
         <h2 className="text-3xl font-extrabold text-gray-800 mb-3">무료 진단 서비스</h2>
         <p className="text-gray-500">
-          인공지능 기반 분석 시스템으로<br/>
+          인공지능 기반 분석 시스템으로<br />
           계정과 플레이스의 현재 상태를 정밀하게 진단합니다.
         </p>
       </div>
-      
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <button 
+        <button
           onClick={() => handleSelectPlatform('INSTAGRAM')}
           className="bg-white p-8 rounded-[32px] shadow-sm hover:shadow-xl transition-all border-2 border-transparent hover:border-pink-500 group text-left relative overflow-hidden"
         >
@@ -282,13 +296,13 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
             </div>
             <h3 className="text-xl font-bold text-gray-800 mb-2">인스타그램 진단</h3>
             <p className="text-gray-500 text-sm leading-relaxed">
-              계정 최적화 점수,<br/>
+              계정 최적화 점수,<br />
               활성도 및 성장 가능성 분석
             </p>
           </div>
         </button>
 
-        <button 
+        <button
           onClick={() => handleSelectPlatform('NAVER_PLACE')}
           className="bg-white p-8 rounded-[32px] shadow-sm hover:shadow-xl transition-all border-2 border-transparent hover:border-green-500 group text-left relative overflow-hidden"
         >
@@ -299,7 +313,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
             </div>
             <h3 className="text-xl font-bold text-gray-800 mb-2">네이버 플레이스</h3>
             <p className="text-gray-500 text-sm leading-relaxed">
-              플레이스 SEO 점수,<br/>
+              플레이스 SEO 점수,<br />
               상위노출 필수 요소 점검
             </p>
           </div>
@@ -307,7 +321,10 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       </div>
 
       <div className="mt-12 text-center">
-        <button onClick={onBack} className="text-gray-400 hover:text-gray-600 font-medium text-sm flex items-center justify-center gap-2 mx-auto">
+        <button
+          onClick={onBack}
+          className="text-gray-400 hover:text-gray-600 font-medium text-sm flex items-center justify-center gap-2 mx-auto"
+        >
           <i className="fa-solid fa-arrow-left"></i>
           메인으로 돌아가기
         </button>
@@ -318,15 +335,27 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
   const renderInput = () => (
     <div className="max-w-md mx-auto animate-bounce-in">
       <div className="bg-white p-8 rounded-[32px] shadow-xl text-center">
-        <div className={`w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-3xl mb-6 ${platform === 'INSTAGRAM' ? 'bg-pink-100 text-pink-500' : 'bg-green-100 text-green-600'}`}>
-          {platform === 'INSTAGRAM' ? <i className="fa-brands fa-instagram"></i> : <span className="font-bold">N</span>}
+        <div
+          className={`w-16 h-16 mx-auto rounded-2xl flex items-center justify-center text-3xl mb-6 ${
+            platform === 'INSTAGRAM'
+              ? 'bg-pink-100 text-pink-500'
+              : 'bg-green-100 text-green-600'
+          }`}
+        >
+          {platform === 'INSTAGRAM' ? (
+            <i className="fa-brands fa-instagram"></i>
+          ) : (
+            <span className="font-bold">N</span>
+          )}
         </div>
-        
+
         <h3 className="text-xl font-bold text-gray-800 mb-2">
           {platform === 'INSTAGRAM' ? '인스타그램 아이디 입력' : '플레이스 링크 입력'}
         </h3>
         <p className="text-gray-500 text-sm mb-8">
-          {platform === 'INSTAGRAM' ? '@ 없이 아이디만 입력해주세요.' : '네이버 지도 공유 링크를 입력해주세요.'}
+          {platform === 'INSTAGRAM'
+            ? '@ 없이 아이디만 입력해주세요.'
+            : '네이버 지도 공유 링크를 입력해주세요.'}
         </p>
 
         <div className="space-y-4">
@@ -372,132 +401,187 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
   const renderResult = () => {
     if (platform === 'INSTAGRAM' && igResult) {
       return (
-         <div className="max-w-3xl mx-auto animate-bounce-in space-y-6">
-            <div className="bg-white rounded-[32px] p-8 shadow-xl text-center relative overflow-hidden">
-               <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-500 to-purple-500"></div>
-               <h3 className="text-gray-500 font-bold mb-6">@{igResult.username} 계정 진단 결과</h3>
-               
-               <div className="flex justify-center items-center gap-8 mb-8">
-                  <div className="relative w-32 h-32 flex items-center justify-center">
-                     <svg className="transform -rotate-90 w-32 h-32">
-                        <circle cx="64" cy="64" r="60" stroke="#f3f4f6" strokeWidth="8" fill="transparent" />
-                        <circle cx="64" cy="64" r="60" stroke="#ec4899" strokeWidth="8" fill="transparent" strokeDasharray={377} strokeDashoffset={377 - (377 * igResult.score) / 100} className="transition-all duration-1000 ease-out" />
-                     </svg>
-                     <div className="absolute inset-0 flex flex-col items-center justify-center">
-                        <span className="text-4xl font-extrabold text-gray-800">{igResult.score}</span>
-                        <span className="text-xs text-gray-400">점</span>
-                     </div>
-                  </div>
-                  <div className="text-left">
-                     <div className="text-sm text-gray-400 font-bold mb-1">계정 등급</div>
-                     <div className={`text-5xl font-black ${['S', 'A'].includes(igResult.grade) ? 'text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-purple-600' : 'text-gray-700'}`}>
-                        {igResult.grade}
-                     </div>
-                  </div>
-               </div>
+        <div className="max-w-3xl mx-auto animate-bounce-in space-y-6">
+          <div className="bg-white rounded-[32px] p-8 shadow-xl text-center relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-500 to-purple-500"></div>
+            <h3 className="text-gray-500 font-bold mb-6">@{igResult.username} 계정 진단 결과</h3>
 
-               <div className="grid grid-cols-3 gap-4 bg-gray-50 rounded-2xl p-4">
-                  <div>
-                     <div className="text-xs text-gray-400 mb-1">팔로워</div>
-                     <div className="font-bold text-gray-800">{igResult.followers.toLocaleString()}</div>
-                  </div>
-                  <div>
-                     <div className="text-xs text-gray-400 mb-1">팔로잉</div>
-                     <div className="font-bold text-gray-800">{igResult.following.toLocaleString()}</div>
-                  </div>
-                  <div>
-                     <div className="text-xs text-gray-400 mb-1">게시물</div>
-                     <div className="font-bold text-gray-800">{igResult.posts.toLocaleString()}</div>
-                  </div>
-               </div>
+            <div className="flex justify-center items-center gap-8 mb-8">
+              <div className="relative w-32 h-32 flex items-center justify-center">
+                <svg className="transform -rotate-90 w-32 h-32">
+                  <circle cx="64" cy="64" r="60" stroke="#f3f4f6" strokeWidth="8" fill="transparent" />
+                  <circle
+                    cx="64"
+                    cy="64"
+                    r="60"
+                    stroke="#ec4899"
+                    strokeWidth="8"
+                    fill="transparent"
+                    strokeDasharray={377}
+                    strokeDashoffset={377 - (377 * igResult.score) / 100}
+                    className="transition-all duration-1000 ease-out"
+                  />
+                </svg>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-4xl font-extrabold text-gray-800">{igResult.score}</span>
+                  <span className="text-xs text-gray-400">점</span>
+                </div>
+              </div>
+              <div className="text-left">
+                <div className="text-sm text-gray-400 font-bold mb-1">계정 등급</div>
+                <div
+                  className={`text-5xl font-black ${
+                    ['S', 'A'].includes(igResult.grade)
+                      ? 'text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-purple-600'
+                      : 'text-gray-700'
+                  }`}
+                >
+                  {igResult.grade}
+                </div>
+              </div>
             </div>
 
-            <div className="bg-white rounded-[32px] p-8 shadow-sm border border-gray-100">
-               <h4 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
-                  <i className="fa-regular fa-lightbulb text-yellow-500"></i> 성장 솔루션
-               </h4>
-               <ul className="space-y-3">
-                  {igResult.tips.map((tip, idx) => (
-                     <li key={idx} className="flex items-start gap-3 bg-pink-50/50 p-3 rounded-xl">
-                        <span className="bg-pink-100 text-pink-600 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">{idx+1}</span>
-                        <span className="text-gray-700 text-sm leading-relaxed">{tip}</span>
-                     </li>
-                  ))}
-               </ul>
-            </div>
-
-            <div className="flex gap-4">
-               <button onClick={() => setStep('SELECT')} className="flex-1 bg-gray-100 text-gray-600 py-4 rounded-xl font-bold">처음으로</button>
-               <button onClick={() => { onBack(); window.scrollTo({top: 0, behavior: 'smooth'}); }} className="flex-1 bg-primary text-white py-4 rounded-xl font-bold shadow-lg">솔루션 적용하기</button>
-            </div>
-         </div>
-      );
-    } 
-    
-    if (platform === 'NAVER_PLACE' && npResult) {
-        return (
-          <div className="max-w-3xl mx-auto animate-bounce-in space-y-6">
-             <div className="bg-white rounded-[32px] p-8 shadow-xl relative overflow-hidden">
-                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-green-500 to-teal-500"></div>
-                
-                <div className="text-center mb-8">
-                   <h3 className="font-bold text-xl text-gray-800 mb-1">{npResult.placeName}</h3>
-                   <p className="text-sm text-gray-500">플레이스 최적화 진단 리포트</p>
-                </div>
-
-                <div className="flex justify-center items-center gap-4 mb-8">
-                   <div className="bg-gray-50 rounded-2xl p-4 text-center min-w-[100px]">
-                      <div className="text-xs text-gray-400 font-bold mb-1">종합 점수</div>
-                      <div className="text-3xl font-extrabold text-green-600">{npResult.score}점</div>
-                   </div>
-                   <div className="bg-gray-50 rounded-2xl p-4 text-center min-w-[100px]">
-                       <div className="text-xs text-gray-400 font-bold mb-1">등급</div>
-                       <div className="text-3xl font-black text-gray-800">{npResult.grade}</div>
-                   </div>
-                </div>
-
-                <div className="space-y-4">
-                   {npResult.scoreBreakdown.map((item, idx) => (
-                      <div key={idx}>
-                         <div className="flex justify-between text-sm mb-1">
-                            <span className="font-bold text-gray-700">{item.name}</span>
-                            <span className="text-gray-400">{item.score}/{item.max}</span>
-                         </div>
-                         <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
-                            <div className="bg-green-500 h-2.5 rounded-full" style={{width: `${(item.score/item.max)*100}%`}}></div>
-                         </div>
-                         <p className="text-xs text-gray-500 text-right">{item.notes}</p>
-                      </div>
-                   ))}
-                </div>
-             </div>
-
-             <div className="bg-white rounded-[32px] p-8 shadow-sm border border-gray-100">
-                <h4 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
-                   <i className="fa-solid fa-list-check text-green-500"></i> 개선 권장사항
-                </h4>
-                {npResult.recommendations.length === 0 ? (
-                    <p className="text-center text-gray-500 py-4">완벽합니다! 특별한 개선사항이 없습니다.</p>
-                ) : (
-                    <ul className="space-y-3">
-                       {npResult.recommendations.map((rec, idx) => (
-                          <li key={idx} className="flex items-start gap-3 bg-green-50/50 p-3 rounded-xl">
-                             <i className="fa-solid fa-check text-green-600 mt-1"></i>
-                             <span className="text-gray-700 text-sm leading-relaxed">{rec}</span>
-                          </li>
-                       ))}
-                    </ul>
-                )}
-             </div>
-
-             <div className="flex gap-4">
-               <button onClick={() => setStep('SELECT')} className="flex-1 bg-gray-100 text-gray-600 py-4 rounded-xl font-bold">처음으로</button>
-               <button onClick={() => { onBack(); window.scrollTo({top: 0, behavior: 'smooth'}); }} className="flex-1 bg-primary text-white py-4 rounded-xl font-bold shadow-lg">솔루션 적용하기</button>
+            <div className="grid grid-cols-3 gap-4 bg-gray-50 rounded-2xl p-4">
+              <div>
+                <div className="text-xs text-gray-400 mb-1">팔로워</div>
+                <div className="font-bold text-gray-800">{igResult.followers.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 mb-1">팔로잉</div>
+                <div className="font-bold text-gray-800">{igResult.following.toLocaleString()}</div>
+              </div>
+              <div>
+                <div className="text-xs text-gray-400 mb-1">게시물</div>
+                <div className="font-bold text-gray-800">{igResult.posts.toLocaleString()}</div>
+              </div>
             </div>
           </div>
-        );
+
+          <div className="bg-white rounded-[32px] p-8 shadow-sm border border-gray-100">
+            <h4 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
+              <i className="fa-regular fa-lightbulb text-yellow-500"></i> 성장 솔루션
+            </h4>
+            <ul className="space-y-3">
+              {igResult.tips.map((tip, idx) => (
+                <li key={idx} className="flex items-start gap-3 bg-pink-50/50 p-3 rounded-xl">
+                  <span className="bg-pink-100 text-pink-600 w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">
+                    {idx + 1}
+                  </span>
+                  <span className="text-gray-700 text-sm leading-relaxed">{tip}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+
+          <div className="flex gap-4">
+            <button onClick={() => setStep('SELECT')} className="flex-1 bg-gray-100 text-gray-600 py-4 rounded-xl font-bold">
+              처음으로
+            </button>
+            <button
+              onClick={() => {
+                onBack();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="flex-1 bg-primary text-white py-4 rounded-xl font-bold shadow-lg"
+            >
+              솔루션 적용하기
+            </button>
+          </div>
+        </div>
+      );
     }
-    
+
+    if (platform === 'NAVER_PLACE' && npResult) {
+      const breakdown = npResult.scoreBreakdown ?? [];
+      const recs = npResult.recommendations ?? [];
+
+      return (
+        <div className="max-w-3xl mx-auto animate-bounce-in space-y-6">
+          <div className="bg-white rounded-[32px] p-8 shadow-xl relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-green-500 to-teal-500"></div>
+
+            <div className="text-center mb-8">
+              <h3 className="font-bold text-xl text-gray-800 mb-1">{npResult.placeName}</h3>
+              <p className="text-sm text-gray-500">플레이스 최적화 진단 리포트</p>
+            </div>
+
+            <div className="flex justify-center items-center gap-4 mb-8">
+              <div className="bg-gray-50 rounded-2xl p-4 text-center min-w-[100px]">
+                <div className="text-xs text-gray-400 font-bold mb-1">종합 점수</div>
+                <div className="text-3xl font-extrabold text-green-600">{npResult.score}점</div>
+              </div>
+              <div className="bg-gray-50 rounded-2xl p-4 text-center min-w-[100px]">
+                <div className="text-xs text-gray-400 font-bold mb-1">등급</div>
+                <div className="text-3xl font-black text-gray-800">{npResult.grade}</div>
+              </div>
+            </div>
+
+            {/* ✅ scoreBreakdown이 없으면 빈 화면 대신 안내 */}
+            {breakdown.length === 0 ? (
+              <div className="bg-gray-50 rounded-2xl p-5 text-center text-gray-600 text-sm">
+                세부 점수 항목(scoreBreakdown)이 아직 준비되지 않았어요.<br />
+                (서버에서 breakdown을 내려주면 자동으로 표시됩니다.)
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {breakdown.map((item, idx) => (
+                  <div key={idx}>
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="font-bold text-gray-700">{item.name}</span>
+                      <span className="text-gray-400">
+                        {item.score}/{item.max}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-100 rounded-full h-2.5 mb-2">
+                      <div
+                        className="bg-green-500 h-2.5 rounded-full"
+                        style={{ width: `${item.max ? (item.score / item.max) * 100 : 0}%` }}
+                      ></div>
+                    </div>
+                    <p className="text-xs text-gray-500 text-right">{item.notes}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-white rounded-[32px] p-8 shadow-sm border border-gray-100">
+            <h4 className="font-bold text-lg text-gray-800 mb-4 flex items-center gap-2">
+              <i className="fa-solid fa-list-check text-green-500"></i> 개선 권장사항
+            </h4>
+
+            {recs.length === 0 ? (
+              <p className="text-center text-gray-500 py-4">완벽합니다! 특별한 개선사항이 없습니다.</p>
+            ) : (
+              <ul className="space-y-3">
+                {recs.map((rec, idx) => (
+                  <li key={idx} className="flex items-start gap-3 bg-green-50/50 p-3 rounded-xl">
+                    <i className="fa-solid fa-check text-green-600 mt-1"></i>
+                    <span className="text-gray-700 text-sm leading-relaxed">{rec}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <div className="flex gap-4">
+            <button onClick={() => setStep('SELECT')} className="flex-1 bg-gray-100 text-gray-600 py-4 rounded-xl font-bold">
+              처음으로
+            </button>
+            <button
+              onClick={() => {
+                onBack();
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              className="flex-1 bg-primary text-white py-4 rounded-xl font-bold shadow-lg"
+            >
+              솔루션 적용하기
+            </button>
+          </div>
+        </div>
+      );
+    }
+
     return null;
   };
 
@@ -508,10 +592,11 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       </div>
       <h3 className="text-xl font-bold text-gray-800 mb-2">진단 실패</h3>
       <p className="text-gray-500 text-sm mb-8 leading-relaxed whitespace-pre-wrap">
-        {errorMessage || '일시적인 오류가 발생했습니다.'}<br/>
+        {errorMessage || '일시적인 오류가 발생했습니다.'}
+        <br />
         입력하신 정보를 확인 후 다시 시도해주세요.
       </p>
-      <button 
+      <button
         onClick={() => setStep('INPUT')}
         className="px-8 py-3 bg-gray-800 text-white rounded-xl font-bold hover:bg-black transition-colors"
       >
