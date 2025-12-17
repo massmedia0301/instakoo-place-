@@ -323,7 +323,7 @@ const calculateNaverScore = (data) => {
 };
 
 /* ============================================================
-   ✅ IMPORTANT: Static files / runtime-config BEFORE SPA fallback
+   ✅ Static files / runtime-config BEFORE SPA fallback
    ============================================================ */
 
 // runtime-config.js는 반드시 SPA fallback보다 먼저!
@@ -335,13 +335,12 @@ app.get("/runtime-config.js", (req, res) => {
   );
 });
 
-// 정적파일은 최대한 먼저 서빙 (assets가 HTML로 떨어지는 걸 방지)
+// 정적파일 서빙 (assets가 HTML로 떨어지는 걸 방지)
 app.use(
   express.static(DIST_DIR, {
     index: false, // index.html은 SPA fallback에서 처리
     maxAge: "1h",
     setHeaders: (res, filePath) => {
-      // js 모듈은 제대로된 mime으로 보내기 (기본도 되지만 안전)
       if (filePath.endsWith(".js")) res.type("application/javascript");
       if (filePath.endsWith(".mjs")) res.type("application/javascript");
       if (filePath.endsWith(".css")) res.type("text/css");
@@ -352,6 +351,12 @@ app.use(
 /* =====================
    APIs
 ===================== */
+
+// Health & Version (먼저)
+app.get("/api/health", (req, res) => res.json({ ok: true }));
+app.get("/api/version", (req, res) =>
+  res.json({ ok: true, version: "LOCAL-FINAL-TYPE-AWARE-V5" })
+);
 
 // Instagram
 app.get("/api/diagnosis/instagram", diagnosisLimiter, async (req, res) => {
@@ -490,18 +495,24 @@ app.post("/api/diagnosis/naver-place", naverPlaceLimiter, async (req, res) => {
   }
 });
 
-// Health & Version
-app.get("/api/health", (req, res) => res.json({ ok: true }));
-app.get("/api/version", (req, res) =>
-  res.json({ ok: true, version: "LOCAL-FINAL-TYPE-AWARE-V4" })
-);
-
 /* =====================
    SPA fallback (LAST)
+   ✅ 확장자 있는 요청은 fallback으로 보내지 말 것!
 ===================== */
 
-// ✅ 정적/런타임/API 어떤 것도 매칭 안 될 때만 index.html
 app.get("*", (req, res) => {
+  // ✅ 1) /api는 여기까지 오면 이상하니 404
+  if (req.path.startsWith("/api/")) {
+    return res.status(404).json({ ok: false, error: "NOT_FOUND" });
+  }
+
+  // ✅ 2) ".확장자"가 있는 요청은 index.html로 보내면 MIME 에러 폭발함
+  //    예: /index.tsx, /main.tsx, /assets/app.js, /something.css ...
+  if (req.path.includes(".")) {
+    return res.status(404).send("Not Found");
+  }
+
+  // ✅ 3) 그 외 SPA 라우팅만 index.html
   return res.sendFile(path.join(DIST_DIR, "index.html"));
 });
 
