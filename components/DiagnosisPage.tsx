@@ -486,6 +486,9 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
           <button onClick={() => setStep("INPUT")}>다시 시도</button>
         </div>
       )}
+            <div className="text-xs text-gray-400 text-center mt-6">
+        BUILD: 6c30150
+      </div>
     </div>
   );
 };
