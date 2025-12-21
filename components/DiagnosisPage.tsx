@@ -151,6 +151,7 @@ const normalizeNaverPlace = (payload: any): NaverPlaceResponse => {
 ===================== */
 
 const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
+  console.log("DIAG BUILD", "6c30150");
   const [step, setStep] = useState<AnalysisStep>("SELECT");
   const [platform, setPlatform] = useState<DiagnosisPlatform>("INSTAGRAM");
   const [inputId, setInputId] = useState("");
