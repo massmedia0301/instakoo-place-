@@ -69,26 +69,30 @@ const joinUrl = (base: string, path: string) => {
   return `${b.replace(/\/+$/, "")}/${p.replace(/^\/+/, "")}`;
 };
 
+/**
+ * ✅ 안전 JSON 읽기 (스트림을 두 번 읽지 않도록 text() 먼저 받고 JSON 파싱)
+ * - JSON이면 파싱
+ * - 아니면 rawText 포함해서 반환
+ */
 async function safeReadJson(res: Response) {
-  const ct = res.headers.get("content-type") || "";
-  // JSON으로 보일 때만 json() 시도
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  const rawText = await res.text().catch(() => "");
+
+  // JSON처럼 보이면 파싱 시도
   if (ct.includes("application/json") || ct.includes("application/problem+json")) {
     try {
-      return await res.json();
+      return JSON.parse(rawText);
     } catch {
-      // JSON 파싱 실패 시 text fallback
-      const t = await res.text().catch(() => "");
-      return { ok: false, message: "Invalid JSON response", rawText: t };
+      return { ok: false, message: "Invalid JSON response", rawText };
     }
   }
 
-  // HTML/text가 오면 json() 하지 말고 text로 받기
-  const text = await res.text().catch(() => "");
+  // JSON이 아니면 HTML/text일 가능성
   return {
     ok: false,
     message:
       "Server returned non-JSON response (maybe HTML). Check server SPA fallback / API route order.",
-    rawText: text,
+    rawText,
   };
 }
 
@@ -246,12 +250,13 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       setProgress((p) => (p < 90 ? p + 1 : p));
     }, 120);
 
-    // API BASE 안전 처리 (빈 문자열이면 같은 오리진으로 요청됨)
+    // ✅ API BASE 안정 처리: 비어있으면 현재 오리진 사용
     const apiBaseRaw = (() => {
       try {
-        return (getApiBaseUrl?.() || "").trim();
+        const v = (getApiBaseUrl?.() || "").trim();
+        return v || window.location.origin;
       } catch {
-        return "";
+        return window.location.origin;
       }
     })();
 
@@ -275,7 +280,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
             throw new Error(msg);
           }
 
-          // 백엔드가 { data: {...} } 형태일 수도, 바로 {...}일 수도 있으니 둘 다 수용
+          // ✅ {data:{...}} 또는 {...} 모두 수용
           const payload = body?.data ?? body;
           const safe = normalizeInstagram(payload);
 
@@ -298,11 +303,17 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
           const body = await safeReadJson(res);
 
           if (!res.ok) {
-            const msg = body?.message || `HTTP ${res.status}`;
+            const msg =
+              body?.message ||
+              body?.error ||
+              `HTTP ${res.status}`;
             throw new Error(msg);
           }
 
-          const safe = normalizeNaverPlace(body);
+          // ✅ 백엔드가 {ok:true, data:{...}}면 data를 사용
+          const payload = body?.data ?? body;
+
+          const safe = normalizeNaverPlace(payload);
           setNpResult(safe);
           setProgress(100);
           setStep("RESULT");
@@ -332,14 +343,15 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
     if (platform === "INSTAGRAM") {
       if (!igResult) return <ResultFallback onRetry={() => setStep("INPUT")} />;
 
-      const tips = igResult.tips ?? []; // 절대 undefined 금지
+      // ✅ 마지막 방어: map 대상은 무조건 배열
+      const tips = Array.isArray(igResult.tips) ? igResult.tips : [];
+
       return (
         <div className="text-center text-gray-800 font-bold">
           <div>
             @{igResult.username} / {igResult.score}점 ({igResult.grade})
           </div>
 
-          {/* tips가 없더라도 안전 */}
           {tips.length > 0 && (
             <ul className="mt-3 text-left font-normal max-w-md mx-auto">
               {tips.map((t, idx) => (
@@ -356,10 +368,18 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
     if (platform === "NAVER_PLACE") {
       if (!npResult) return <ResultFallback onRetry={() => setStep("INPUT")} />;
 
-      const mainKeywords = npResult.keywords?.main ?? [];
-      const subKeywords = npResult.keywords?.sub ?? [];
-      const recs = npResult.recommendations ?? [];
-      const breakdown = npResult.scoreBreakdown ?? [];
+      const mainKeywords = Array.isArray(npResult.keywords?.main)
+        ? npResult.keywords.main
+        : [];
+      const subKeywords = Array.isArray(npResult.keywords?.sub)
+        ? npResult.keywords.sub
+        : [];
+      const recs = Array.isArray(npResult.recommendations)
+        ? npResult.recommendations
+        : [];
+      const breakdown = Array.isArray(npResult.scoreBreakdown)
+        ? npResult.scoreBreakdown
+        : [];
 
       return (
         <div className="text-center text-gray-800 font-bold">
@@ -367,15 +387,12 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
             {npResult.placeName} / {npResult.score}점 ({npResult.grade})
           </div>
 
-          {/* 안전 표시(없어도 안 터짐) */}
           {(mainKeywords.length > 0 || subKeywords.length > 0) && (
             <div className="mt-3 text-left font-normal max-w-md mx-auto">
               {mainKeywords.length > 0 && (
                 <div className="mb-2">
                   <div className="font-semibold text-gray-800">메인 키워드</div>
-                  <div className="text-gray-700">
-                    {mainKeywords.join(", ")}
-                  </div>
+                  <div className="text-gray-700">{mainKeywords.join(", ")}</div>
                 </div>
               )}
               {subKeywords.length > 0 && (
@@ -393,8 +410,8 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
               <ul className="mt-2">
                 {breakdown.map((b, idx) => (
                   <li key={idx} className="text-gray-700">
-                    • {b.name}: {b.score}/{b.max}{" "}
-                    {b.notes ? `(${b.notes})` : ""}
+                    • {b?.name ?? ""}: {b?.score ?? 0}/{b?.max ?? 0}{" "}
+                    {b?.notes ? `(${b.notes})` : ""}
                   </li>
                 ))}
               </ul>
@@ -422,7 +439,6 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
 
   return (
     <div className="min-h-screen bg-primaryBg pt-24 pb-12 px-4">
-      {/* Back button (원하면 사용) */}
       <div className="max-w-xl mx-auto mb-4">
         <button onClick={onBack} className="text-gray-700 font-bold">
           ← 뒤로
@@ -430,7 +446,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       </div>
 
       {step === "SELECT" && (
-        <div className="text-center max-w-xl mx-auto">
+        <div className="text-center max-w-xl mx-auto space-x-2">
           <button onClick={() => handleSelectPlatform("INSTAGRAM")}>
             인스타그램
           </button>
@@ -441,15 +457,14 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       )}
 
       {step === "INPUT" && (
-        <div className="text-center max-w-xl mx-auto">
+        <div className="text-center max-w-xl mx-auto space-y-2">
           <input
             value={inputId}
             onChange={(e) => setInputId(e.target.value)}
             placeholder={
-              platform === "INSTAGRAM"
-                ? "instagram_id"
-                : "https://naver.me/xxxx"
+              platform === "INSTAGRAM" ? "instagram_id" : "https://naver.me/xxxx"
             }
+            className="w-full px-3 py-2 rounded"
           />
           <button onClick={handleStartAnalysis}>진단 시작</button>
         </div>
@@ -465,7 +480,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
       {step === "RESULT" && <div className="max-w-xl mx-auto">{renderResult()}</div>}
 
       {step === "ERROR" && (
-        <div className="text-center text-red-500 max-w-xl mx-auto">
+        <div className="text-center text-red-500 max-w-xl mx-auto space-y-2">
           <p className="whitespace-pre-wrap">{errorMessage}</p>
           <button onClick={() => setStep("INPUT")}>다시 시도</button>
         </div>
@@ -478,7 +493,7 @@ const DiagnosisPage: React.FC<DiagnosisPageProps> = ({ onBack }) => {
    Result Fallback
 ===================== */
 const ResultFallback = ({ onRetry }: { onRetry: () => void }) => (
-  <div className="text-center">
+  <div className="text-center space-y-2">
     <p className="font-bold text-gray-700">결과를 표시할 수 없습니다.</p>
     <button onClick={onRetry}>다시 시도</button>
   </div>
